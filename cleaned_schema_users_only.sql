@@ -1,265 +1,325 @@
 -- =============================================
--- ENABLE ROW LEVEL SECURITY ON ALL TABLES
+-- CORE: Extensions
 -- =============================================
-ALTER TABLE IF EXISTS users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS food_donations ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS pickup_requests ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS ai_recipes ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS feedback ENABLE ROW LEVEL SECURITY;
-ALTER TABLE IF EXISTS user_ratings ENABLE ROW LEVEL SECURITY;
+create extension if not exists "pgcrypto";
+create extension if not exists "uuid-ossp";
 
 -- =============================================
--- USERS TABLE
+-- HELPER: updated_at trigger
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.users (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  name character varying(100) NOT NULL,
-  email character varying(255) NOT NULL UNIQUE,
-  password_hash character varying(255) NOT NULL,
-  phone character varying(20),
-  avatar_url character varying(500),
-  avatar_public_id character varying(255),
+create or replace function set_updated_at()
+returns trigger as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$ language plpgsql;
+
+-- =============================================
+-- TABLE: users
+-- =============================================
+create table if not exists public.users (
+  id uuid primary key default gen_random_uuid(),
+  name varchar(100) not null,
+  email varchar(255) not null unique,
+  password_hash varchar(255) not null,
+  phone varchar(20),
+  avatar_url varchar(500),
+  avatar_public_id varchar(255),
   address text,
-  city character varying(100),
-  state character varying(100),
-  zip_code character varying(20),
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT users_pkey PRIMARY KEY (id)
+  city varchar(100),
+  state varchar(100),
+  zip_code varchar(20),
+  role varchar(20) not null default 'user' check (role in ('user','admin')),
+  is_verified boolean not null default false,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
+create trigger trg_users_updated_at
+before update on public.users
+for each row execute function set_updated_at();
+
 -- =============================================
--- FOOD DONATIONS TABLE
+-- TABLE: food_donations
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.food_donations (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  donor_id uuid NOT NULL,
-  title character varying(255) NOT NULL,
+create table if not exists public.food_donations (
+  id uuid primary key default gen_random_uuid(),
+  donor_id uuid not null references public.users(id) on delete cascade,
+  title varchar(255) not null,
   description text,
-  food_type character varying(50) NOT NULL,
-  quantity character varying(100) NOT NULL,
-  expiry_date date NOT NULL,
-  pickup_location text NOT NULL,
-  image_url character varying(500),
-  image_public_id character varying(255),
-  status character varying(20) DEFAULT 'available'::character varying CHECK (status::text = ANY (ARRAY['available', 'reserved', 'picked_up', 'expired', 'cancelled'])),
+  food_type varchar(50) not null,
+  quantity varchar(100) not null,
+  expiry_date date not null,
+  pickup_location text not null,
+  image_url varchar(500),
+  image_public_id varchar(255),
+  status varchar(20) not null default 'available'
+    check (status in ('available','reserved','picked_up','expired','cancelled')),
   donor_contact jsonb,
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT food_donations_pkey PRIMARY KEY (id),
-  CONSTRAINT food_donations_donor_id_fkey FOREIGN KEY (donor_id) REFERENCES public.users(id) ON DELETE CASCADE
+  additional_notes text,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
+create trigger trg_food_donations_updated_at
+before update on public.food_donations
+for each row execute function set_updated_at();
+
 -- =============================================
--- PICKUP REQUESTS TABLE
+-- TABLE: pickup_requests
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.pickup_requests (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  donation_id uuid NOT NULL,
-  requester_id uuid NOT NULL,
-  status character varying(20) DEFAULT 'pending'::character varying CHECK (status::text = ANY (ARRAY['pending', 'approved', 'rejected', 'cancelled', 'completed'])),
+create table if not exists public.pickup_requests (
+  id uuid primary key default gen_random_uuid(),
+  donation_id uuid not null references public.food_donations(id) on delete cascade,
+  requester_id uuid not null references public.users(id) on delete cascade,
+  status varchar(20) not null default 'pending'
+    check (status in ('pending','approved','rejected','cancelled','completed')),
   message text,
-  pickup_time timestamp with time zone,
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT pickup_requests_pkey PRIMARY KEY (id),
-  CONSTRAINT pickup_requests_donation_id_fkey FOREIGN KEY (donation_id) REFERENCES public.food_donations(id) ON DELETE CASCADE,
-  CONSTRAINT pickup_requests_requester_id_fkey FOREIGN KEY (requester_id) REFERENCES public.users(id) ON DELETE CASCADE
+  pickup_time timestamptz,
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
+create trigger trg_pickup_requests_updated_at
+before update on public.pickup_requests
+for each row execute function set_updated_at();
+
 -- =============================================
--- AI RECIPES TABLE
+-- TABLE: ai_recipes
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.ai_recipes (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  user_id uuid NOT NULL,
-  title character varying(255) NOT NULL,
+create table if not exists public.ai_recipes (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  title varchar(255) not null,
   description text,
-  ingredients jsonb NOT NULL,
-  instructions jsonb NOT NULL,
-  prep_time character varying(50),
-  servings integer,
-  difficulty character varying(20) CHECK (difficulty::text = ANY (ARRAY['Easy', 'Medium', 'Hard'])),
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT ai_recipes_pkey PRIMARY KEY (id),
-  CONSTRAINT ai_recipes_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE
+  ingredients jsonb not null,
+  instructions jsonb not null,
+  prep_time varchar(50),
+  servings int,
+  difficulty varchar(20) check (difficulty in ('Easy','Medium','Hard')),
+  created_at timestamptz default now()
 );
 
 -- =============================================
--- FEEDBACK TABLE
+-- TABLE: feedback
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.feedback (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  user_id uuid,
-  name character varying(100),
-  email character varying(255),
-  subject character varying(255),
-  message text NOT NULL,
-  rating integer CHECK (rating >= 1 AND rating <= 5),
-  category character varying(50) DEFAULT 'general' CHECK (category::text = ANY (ARRAY['general', 'bug_report', 'feature_request', 'complaint', 'praise'])),
-  status character varying(20) DEFAULT 'open' CHECK (status::text = ANY (ARRAY['open', 'in_progress', 'resolved', 'closed'])),
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT feedback_pkey PRIMARY KEY (id),
-  CONSTRAINT feedback_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE SET NULL
+create table if not exists public.feedback (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references public.users(id) on delete set null,
+  name varchar(100),
+  email varchar(255),
+  subject varchar(255),
+  message text not null,
+  rating int check (rating between 1 and 5),
+  category varchar(50) not null default 'general'
+    check (category in ('general','bug_report','feature_request','complaint','praise')),
+  status varchar(20) not null default 'open'
+    check (status in ('open','in_progress','resolved','closed')),
+  created_at timestamptz default now()
 );
 
 -- =============================================
--- USER RATINGS TABLE
+-- TABLE: user_ratings
 -- =============================================
-CREATE TABLE IF NOT EXISTS public.user_ratings (
-  id uuid NOT NULL DEFAULT gen_random_uuid(),
-  rater_id uuid NOT NULL,
-  rated_user_id uuid NOT NULL,
-  donation_id uuid,
-  rating integer NOT NULL CHECK (rating >= 1 AND rating <= 5),
+create table if not exists public.user_ratings (
+  id uuid primary key default gen_random_uuid(),
+  rater_id uuid not null references public.users(id) on delete cascade,
+  rated_user_id uuid not null references public.users(id) on delete cascade,
+  donation_id uuid references public.food_donations(id) on delete cascade,
+  rating int not null check (rating between 1 and 5),
   review text,
-  created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT user_ratings_pkey PRIMARY KEY (id),
-  CONSTRAINT user_ratings_rater_id_fkey FOREIGN KEY (rater_id) REFERENCES public.users(id) ON DELETE CASCADE,
-  CONSTRAINT user_ratings_donation_id_fkey FOREIGN KEY (donation_id) REFERENCES public.food_donations(id) ON DELETE CASCADE,
-  CONSTRAINT user_ratings_rated_user_id_fkey FOREIGN KEY (rated_user_id) REFERENCES public.users(id) ON DELETE CASCADE
+  created_at timestamptz default now()
 );
 
 -- =============================================
--- ROW LEVEL SECURITY POLICIES (IDEMPOTENT)
+-- INDEXES
+-- =============================================
+create index if not exists idx_users_email on public.users(email);
+create index if not exists idx_users_role on public.users(role);
+
+create index if not exists idx_food_donations_donor_id on public.food_donations(donor_id);
+create index if not exists idx_food_donations_status on public.food_donations(status);
+create index if not exists idx_food_donations_food_type on public.food_donations(food_type);
+create index if not exists idx_food_donations_expiry_date on public.food_donations(expiry_date);
+create index if not exists idx_food_donations_created_at on public.food_donations(created_at);
+
+create index if not exists idx_pickup_requests_donation_id on public.pickup_requests(donation_id);
+create index if not exists idx_pickup_requests_requester_id on public.pickup_requests(requester_id);
+create index if not exists idx_pickup_requests_status on public.pickup_requests(status);
+
+create index if not exists idx_ai_recipes_user_id on public.ai_recipes(user_id);
+create index if not exists idx_ai_recipes_created_at on public.ai_recipes(created_at);
+
+create index if not exists idx_feedback_user_id on public.feedback(user_id);
+create index if not exists idx_feedback_status on public.feedback(status);
+create index if not exists idx_feedback_category on public.feedback(category);
+create index if not exists idx_feedback_created_at on public.feedback(created_at);
+
+create index if not exists idx_user_ratings_rater_id on public.user_ratings(rater_id);
+create index if not exists idx_user_ratings_rated_user_id on public.user_ratings(rated_user_id);
+create index if not exists idx_user_ratings_donation_id on public.user_ratings(donation_id);
+
+-- =============================================
+-- RLS ENABLE
+-- =============================================
+alter table public.users enable row level security;
+alter table public.food_donations enable row level security;
+alter table public.pickup_requests enable row level security;
+alter table public.ai_recipes enable row level security;
+alter table public.feedback enable row level security;
+alter table public.user_ratings enable row level security;
+
+-- =============================================
+-- RLS POLICIES
 -- =============================================
 
 -- USERS
-DROP POLICY IF EXISTS "Users can view their own profile" ON public.users;
-CREATE POLICY "Users can view their own profile" ON public.users
-  FOR SELECT USING (auth.uid() = id);
+drop policy if exists "users_select_self" on public.users;
+create policy "users_select_self" on public.users
+  for select using (auth.uid() = id);
 
-DROP POLICY IF EXISTS "Users can update their own profile" ON public.users;
-CREATE POLICY "Users can update their own profile" ON public.users
-  FOR UPDATE USING (auth.uid() = id);
+drop policy if exists "users_update_self" on public.users;
+create policy "users_update_self" on public.users
+  for update using (auth.uid() = id);
 
-DROP POLICY IF EXISTS "Users can insert their own profile" ON public.users;
-CREATE POLICY "Users can insert their own profile" ON public.users
-  FOR INSERT WITH CHECK (auth.uid() = id);
+drop policy if exists "users_insert_self" on public.users;
+create policy "users_insert_self" on public.users
+  for insert with check (auth.uid() = id);
+
+-- Allow admins to view all users (optional, used by admin UIs)
+drop policy if exists "users_select_admin" on public.users;
+create policy "users_select_admin" on public.users
+  for select using (
+    exists (
+      select 1 from public.users u
+      where u.id = auth.uid() and u.role = 'admin'
+    )
+  );
 
 -- FOOD DONATIONS
-DROP POLICY IF EXISTS "Anyone can view available donations" ON public.food_donations;
-CREATE POLICY "Anyone can view available donations" ON public.food_donations
-  FOR SELECT USING (status = 'available');
+drop policy if exists "donations_public_available" on public.food_donations;
+create policy "donations_public_available" on public.food_donations
+  for select using (status = 'available' and expiry_date >= current_date);
 
-DROP POLICY IF EXISTS "Users can view their own donations" ON public.food_donations;
-CREATE POLICY "Users can view their own donations" ON public.food_donations
-  FOR SELECT USING (auth.uid() = donor_id);
+drop policy if exists "donations_select_own" on public.food_donations;
+create policy "donations_select_own" on public.food_donations
+  for select using (auth.uid() = donor_id);
 
-DROP POLICY IF EXISTS "Authenticated users can create donations" ON public.food_donations;
-CREATE POLICY "Authenticated users can create donations" ON public.food_donations
-  FOR INSERT WITH CHECK (auth.uid() = donor_id);
+drop policy if exists "donations_insert_own" on public.food_donations;
+create policy "donations_insert_own" on public.food_donations
+  for insert with check (auth.uid() = donor_id);
 
-DROP POLICY IF EXISTS "Users can update their own donations" ON public.food_donations;
-CREATE POLICY "Users can update their own donations" ON public.food_donations
-  FOR UPDATE USING (auth.uid() = donor_id);
+drop policy if exists "donations_update_own" on public.food_donations;
+create policy "donations_update_own" on public.food_donations
+  for update using (auth.uid() = donor_id);
 
-DROP POLICY IF EXISTS "Users can delete their own donations" ON public.food_donations;
-CREATE POLICY "Users can delete their own donations" ON public.food_donations
-  FOR DELETE USING (auth.uid() = donor_id);
+drop policy if exists "donations_delete_own" on public.food_donations;
+create policy "donations_delete_own" on public.food_donations
+  for delete using (auth.uid() = donor_id);
 
 -- PICKUP REQUESTS
-DROP POLICY IF EXISTS "Users can view their own pickup requests" ON public.pickup_requests;
-CREATE POLICY "Users can view their own pickup requests" ON public.pickup_requests
-  FOR SELECT USING (
-    auth.uid() = requester_id OR 
-    auth.uid() IN (SELECT donor_id FROM public.food_donations WHERE id = donation_id)
+-- View if requester or donor of the related donation
+drop policy if exists "requests_select_requester_or_donor" on public.pickup_requests;
+create policy "requests_select_requester_or_donor" on public.pickup_requests
+  for select using (
+    auth.uid() = requester_id
+    or auth.uid() in (select donor_id from public.food_donations where id = donation_id)
   );
 
-DROP POLICY IF EXISTS "Authenticated users can create pickup requests" ON public.pickup_requests;
-CREATE POLICY "Authenticated users can create pickup requests" ON public.pickup_requests
-  FOR INSERT WITH CHECK (auth.uid() = requester_id);
+-- Create by requester (self)
+drop policy if exists "requests_insert_self" on public.pickup_requests;
+create policy "requests_insert_self" on public.pickup_requests
+  for insert with check (auth.uid() = requester_id);
 
-DROP POLICY IF EXISTS "Donors can update pickup requests for their donations" ON public.pickup_requests;
-CREATE POLICY "Donors can update pickup requests for their donations" ON public.pickup_requests
-  FOR UPDATE USING (
-    auth.uid() IN (SELECT donor_id FROM public.food_donations WHERE id = donation_id)
+-- Update by donor (approval/reject/complete) or requester (cancel their own)
+drop policy if exists "requests_update_donor" on public.pickup_requests;
+create policy "requests_update_donor" on public.pickup_requests
+  for update using (
+    auth.uid() in (select donor_id from public.food_donations where id = donation_id)
   );
 
-DROP POLICY IF EXISTS "Requesters can update their own requests" ON public.pickup_requests;
-CREATE POLICY "Requesters can update their own requests" ON public.pickup_requests
-  FOR UPDATE USING (auth.uid() = requester_id);
+drop policy if exists "requests_update_requester" on public.pickup_requests;
+create policy "requests_update_requester" on public.pickup_requests
+  for update using (auth.uid() = requester_id);
+
+-- Optional: delete by requester (cancel) or donor (manage)
+drop policy if exists "requests_delete_requester_or_donor" on public.pickup_requests;
+create policy "requests_delete_requester_or_donor" on public.pickup_requests
+  for delete using (
+    auth.uid() = requester_id
+    or auth.uid() in (select donor_id from public.food_donations where id = donation_id)
+  );
 
 -- AI RECIPES
-DROP POLICY IF EXISTS "Users can view their own recipes" ON public.ai_recipes;
-CREATE POLICY "Users can view their own recipes" ON public.ai_recipes
-  FOR SELECT USING (auth.uid() = user_id);
+drop policy if exists "recipes_select_own" on public.ai_recipes;
+create policy "recipes_select_own" on public.ai_recipes
+  for select using (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Authenticated users can create recipes" ON public.ai_recipes;
-CREATE POLICY "Authenticated users can create recipes" ON public.ai_recipes
-  FOR INSERT WITH CHECK (auth.uid() = user_id);
+drop policy if exists "recipes_insert_own" on public.ai_recipes;
+create policy "recipes_insert_own" on public.ai_recipes
+  for insert with check (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can update their own recipes" ON public.ai_recipes;
-CREATE POLICY "Users can update their own recipes" ON public.ai_recipes
-  FOR UPDATE USING (auth.uid() = user_id);
+drop policy if exists "recipes_update_own" on public.ai_recipes;
+create policy "recipes_update_own" on public.ai_recipes
+  for update using (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can delete their own recipes" ON public.ai_recipes;
-CREATE POLICY "Users can delete their own recipes" ON public.ai_recipes
-  FOR DELETE USING (auth.uid() = user_id);
+drop policy if exists "recipes_delete_own" on public.ai_recipes;
+create policy "recipes_delete_own" on public.ai_recipes
+  for delete using (auth.uid() = user_id);
 
 -- FEEDBACK
-DROP POLICY IF EXISTS "Anyone can view public feedback" ON public.feedback;
-CREATE POLICY "Anyone can view public feedback" ON public.feedback
-  FOR SELECT USING (status IN ('open', 'resolved') AND category IN ('general', 'praise', 'feature_request'));
-
-DROP POLICY IF EXISTS "Anyone can create feedback" ON public.feedback;
-CREATE POLICY "Anyone can create feedback" ON public.feedback
-  FOR INSERT WITH CHECK (true);
-
-DROP POLICY IF EXISTS "Users can view their own feedback" ON public.feedback;
-CREATE POLICY "Users can view their own feedback" ON public.feedback
-  FOR SELECT USING (auth.uid() = user_id);
-
--- USER RATINGS
-DROP POLICY IF EXISTS "Users can view ratings for their donations" ON public.user_ratings;
-CREATE POLICY "Users can view ratings for their donations" ON public.user_ratings
-  FOR SELECT USING (
-    auth.uid() = rated_user_id OR 
-    auth.uid() IN (SELECT donor_id FROM public.food_donations WHERE id = donation_id)
+-- Public can read a curated subset
+drop policy if exists "feedback_public_read_curated" on public.feedback;
+create policy "feedback_public_read_curated" on public.feedback
+  for select using (
+    status in ('open','resolved')
+    and category in ('general','praise','feature_request')
   );
 
-DROP POLICY IF EXISTS "Authenticated users can create ratings" ON public.user_ratings;
-CREATE POLICY "Authenticated users can create ratings" ON public.user_ratings
-  FOR INSERT WITH CHECK (auth.uid() = rater_id);
+-- Users can read their own feedback
+drop policy if exists "feedback_select_own" on public.feedback;
+create policy "feedback_select_own" on public.feedback
+  for select using (auth.uid() = user_id);
 
-DROP POLICY IF EXISTS "Users can update their own ratings" ON public.user_ratings;
-CREATE POLICY "Users can update their own ratings" ON public.user_ratings
-  FOR UPDATE USING (auth.uid() = rater_id);
+-- Anyone can create feedback (anonymous allowed)
+drop policy if exists "feedback_insert_any" on public.feedback;
+create policy "feedback_insert_any" on public.feedback
+  for insert with check (true);
 
-DROP POLICY IF EXISTS "Users can delete their own ratings" ON public.user_ratings;
-CREATE POLICY "Users can delete their own ratings" ON public.user_ratings
-  FOR DELETE USING (auth.uid() = rater_id);
+-- User can update/delete their own feedback; admins can manage all
+drop policy if exists "feedback_update_own_or_admin" on public.feedback;
+create policy "feedback_update_own_or_admin" on public.feedback
+  for update using (
+    auth.uid() = user_id
+    or exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin')
+  );
 
--- =============================================
--- INDEXES FOR PERFORMANCE
--- =============================================
+drop policy if exists "feedback_delete_own_or_admin" on public.feedback;
+create policy "feedback_delete_own_or_admin" on public.feedback
+  for delete using (
+    auth.uid() = user_id
+    or exists (select 1 from public.users u where u.id = auth.uid() and u.role = 'admin')
+  );
 
--- Users
-CREATE INDEX IF NOT EXISTS idx_users_email ON public.users(email);
+-- USER RATINGS
+-- View ratings if you are the rated user or you donated the related donation
+drop policy if exists "ratings_select_rated_or_donor" on public.user_ratings;
+create policy "ratings_select_rated_or_donor" on public.user_ratings
+  for select using (
+    auth.uid() = rated_user_id
+    or auth.uid() in (select donor_id from public.food_donations where id = donation_id)
+  );
 
--- Food Donations
-CREATE INDEX IF NOT EXISTS idx_food_donations_donor_id ON public.food_donations(donor_id);
-CREATE INDEX IF NOT EXISTS idx_food_donations_status ON public.food_donations(status);
-CREATE INDEX IF NOT EXISTS idx_food_donations_food_type ON public.food_donations(food_type);
-CREATE INDEX IF NOT EXISTS idx_food_donations_expiry_date ON public.food_donations(expiry_date);
-CREATE INDEX IF NOT EXISTS idx_food_donations_created_at ON public.food_donations(created_at);
+-- Create/update/delete your own ratings
+drop policy if exists "ratings_insert_own" on public.user_ratings;
+create policy "ratings_insert_own" on public.user_ratings
+  for insert with check (auth.uid() = rater_id);
 
--- Pickup Requests
-CREATE INDEX IF NOT EXISTS idx_pickup_requests_donation_id ON public.pickup_requests(donation_id);
-CREATE INDEX IF NOT EXISTS idx_pickup_requests_requester_id ON public.pickup_requests(requester_id);
-CREATE INDEX IF NOT EXISTS idx_pickup_requests_status ON public.pickup_requests(status);
+drop policy if exists "ratings_update_own" on public.user_ratings;
+create policy "ratings_update_own" on public.user_ratings
+  for update using (auth.uid() = rater_id);
 
--- AI Recipes
-CREATE INDEX IF NOT EXISTS idx_ai_recipes_user_id ON public.ai_recipes(user_id);
-CREATE INDEX IF NOT EXISTS idx_ai_recipes_created_at ON public.ai_recipes(created_at);
-
--- Feedback
-CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON public.feedback(user_id);
-CREATE INDEX IF NOT EXISTS idx_feedback_status ON public.feedback(status);
-CREATE INDEX IF NOT EXISTS idx_feedback_category ON public.feedback(category);
-CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON public.feedback(created_at);
-
--- User Ratings
-CREATE INDEX IF NOT EXISTS idx_user_ratings_rater_id ON public.user_ratings(rater_id);
-CREATE INDEX IF NOT EXISTS idx_user_ratings_rated_user_id ON public.user_ratings(rated_user_id);
-CREATE INDEX IF NOT EXISTS idx_user_ratings_donation_id ON public.user_ratings(donation_id);
+drop policy if exists "ratings_delete_own" on public.user_ratings;
+create policy "ratings_delete_own" on public.user_ratings
+  for delete using (auth.uid() = rater_id);

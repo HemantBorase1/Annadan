@@ -18,7 +18,7 @@ import { useToast } from '../../components/ui/toaster'
 export default function ProfilePage() {
 
 	const { addToast } = useToast()
-	const { isAuthenticated } = useAuthContext()
+	const { isAuthenticated, logout } = useAuthContext()
 	const {
 		profile,
 		userDonations,
@@ -57,13 +57,15 @@ export default function ProfilePage() {
 		}
 	}, [profile])
 
-	// Redirect if not authenticated
+	// If backend says user not found or auth required, clear token/state so navbar shows Sign In/Sign Up
 	useEffect(() => {
-		if (!isLoading && !isAuthenticated) {
-			// Redirect to signin page
-			window.location.href = '/auth/signin'
+		if (!isLoading && error) {
+			const message = String(error).toLowerCase()
+			if (message.includes('authentication required') || message.includes('user not found')) {
+				logout()
+			}
 		}
-	}, [isAuthenticated, isLoading])
+	}, [error, isLoading, logout])
 
 	const handleEditProfile = () => {
 		setIsEditingProfile(true)
